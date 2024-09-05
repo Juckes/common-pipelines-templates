@@ -1,0 +1,29 @@
+parameters:
+  - name: appName
+    type: string
+  - name: appResourceGroup
+  - name: appStagingSlotName
+    type: string
+    default: production
+  - name: appTargetSlotName
+    type: string
+    default: production
+
+steps:
+  - script: |
+        az account set -s $(SUBSCRIPTION_ID)
+
+        if [[ ${{ parameters.appStagingSlotName }} != ${{ parameters.appTargetSlotName }} ]]; then
+          echo "Swapping App Service ${{ parameters.appStagingSlotName }} slot to ${{ parameters.appTargetSlotName }} slot..."
+          az webapp deployment slot swap --name ${{ parameters.appName }} \
+          --resource-group ${{ parameters.appResourceGroup }} \
+          --slot ${{ parameters.appStagingSlotName }} \
+          --target-slot ${{ parameters.appTargetSlotName }}
+        else
+          echo "Staging slot ${{ parameters.appStagingSlotName }} matches target slot ${{ parameters.appTargetSlotName }}... nothing to do!"
+        fi
+
+    displayName: Swap Azure Web App Slot
+    env:
+      AZURE_SERVICE_PRINCIPAL_ID: $(AZURE_SERVICE_PRINCIPAL_ID)
+      AZURE_SERVICE_PRINCIPAL_SECRET: $(AZURE_SERVICE_PRINCIPAL_SECRET)

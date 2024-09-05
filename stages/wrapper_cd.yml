@@ -1,0 +1,316 @@
+parameters:
+  - name: automaticDeployments
+    type: object
+    default:
+      environments:
+        - name: Dev
+  - name: azureAuth
+    type: boolean
+    default: true
+  - name: deploymentStages
+    type: object
+#   example:
+#     - name: Example
+#       condition: succeeded()
+#       dependsOn:
+#         - Previous Stage
+#       deploymentJobs:
+#         - name: Example
+#           artifact: 
+#             name: artifact-name
+#             path: $(Pipeline.Workspace)
+#             patterns: **/*.zip
+#             sourcePipeline: pipeline name
+#           condition: condition
+#           container: container-name
+#           isDeployment: false
+#           steps:
+#             - template: $(WORKING_DIRECTORY)/steps/terragrunt_plan_all.yml
+#           timeoutInMinutes: 120
+#           variables:
+#             - name: myVar
+#               value: myString
+#       pool: agent-pool
+#       variables:
+#         - name: myVar
+#           value: myString
+#       workingDirectory: $(Pipeline.Workspace)
+  - name: environments
+    type: object
+    default:
+      - name: Dev
+      - name: Test
+        dependsOn:
+          - Dev
+      - name: Prod
+        dependsOn:
+          - Test
+  - name: variableGroupPrefix
+    type: string
+    default: cd_pipeline_secrets
+  - name: globalVariables
+    type: object
+    default: []
+  - name: pool
+    type: object
+    default:
+      name: pins-odt-agent-pool
+  - name: preDeploymentStages
+    type: object
+    default: []
+#   example:
+#     - name: Example
+#       condition: succeeded()
+#       dependsOn:
+#         - Previous Stage
+#       jobs:
+#         - name: Example
+#           condition: condtion
+#           container: container-name
+#           steps:
+#             - template: $(WORKING_DIRECTORY)/steps/terragrunt_plan_all.yml
+#           timeoutInMinutes: 120
+#           variables:
+#             - name: myVar
+#               value: myString
+#       pool: agent-pool
+#       variables:
+#         - name: myVar
+#           value: myString
+#       workingDirectory: $(Pipeline.Workspace)
+  - name: region
+    type: string
+    default: UK West
+    values:
+      - UK West
+      - UK South
+  - name: sourcePipeline
+    type: string
+    default: ''
+  - name: workingDirectory
+    type: string
+    default: $(System.DefaultWorkingDirectory)
+  
+variables:
+  - ${{ each var in parameters.globalVariables }}:
+    - ${{ var }}
+  - group: pipeline_secrets
+
+stages:
+  - ${{ if in(variables['Build.Reason'], 'IndividualCI', 'BatchedCI', 'ResourceTrigger') }}:
+    - ${{ if ne(parameters.automaticDeployments, '') }}:
+      - ${{ each stage in parameters.preDeploymentStages }}:
+        - template: ./wrapper_stage.yml
+          parameters:
+            condition: ${{ stage.condition }}
+            dependsOn:
+              - ${{ each dependsOnStage in stage.dependsOn }}:
+                - ${{ lower(replace(replace(replace(replace(dependsOnStage, '-', '_'), ' ', '_'), '&', 'And'), ',', '')) }}
+            jobs:
+              - ${{ each job in stage.jobs }}:
+                - template: ../jobs/wrapper_job.yml
+                  parameters:
+                    dependsOn:
+                      - ${{ each dependsOnJob in job.dependsOn }}:
+                        - name: ${{ dependsOnJob }}
+                    condition: ${{ job.condition }}
+                    container: ${{ job.container }}
+                    name: ${{ job.name }}
+                    steps:
+                      - ${{ each step in job.steps }}:
+                        - ${{ step }}
+                    timeoutInMinutes: ${{ job.timeoutInMinutes }}
+                    variables:
+                      - ${{ each var in job.variables }}:
+                        - ${{ var }}
+            ${{ if stage.pool }}:
+              pool: ${{ stage.pool }}
+            ${{ else }}:
+              pool: ${{ parameters.pool }}
+            name: ${{ stage.name }}
+            variables:
+              - template: ../variables/regions/${{ lower(replace(parameters.region, ' ', '-')) }}.yml
+              - ${{ each var in stage.variables }}:
+                  - ${{ var }}
+            ${{ if stage.workingDirectory }}:
+              workingDirectory: ${{ stage.workingDirectory }}
+            ${{ else }}:
+              workingDirectory: ${{ parameters.workingDirectory }}
+      - ${{ each environment in parameters.automaticDeployments.environments }}:
+        - ${{ each stage in parameters.deploymentStages }}:
+          - template: ./wrapper_stage.yml
+            parameters:
+              condition: ${{ stage.condition }}
+              dependsOn:
+                - ${{ each dependsOn in environment.dependsOn }}:
+                  - ${{ lower(replace(replace(replace(replace(stage.name, '-', '_'), ' ', '_'), '&', 'And'), ',', '')) }}_${{ lower(dependsOn) }}
+                - ${{ each dependsOnStage in stage.dependsOn }}:
+                  - ${{ lower(replace(replace(replace(replace(dependsOnStage, '-', '_'), ' ', '_'), '&', 'And'), ',', '')) }}_${{ lower(environment.name) }}
+                - ${{ each preDeploymentStage in parameters.preDeploymentStages }}:
+                  - ${{ lower(replace(replace(replace(replace(preDeploymentStage.name, '-', '_'), ' ', '_'), '&', 'And'), ',', '')) }}
+              jobs:
+                - ${{ each job in stage.deploymentJobs }}:
+                  - ${{ if eq(job.isDeployment, 'false') }}:
+                    - template: ../jobs/wrapper_job.yml
+                      parameters:
+                        dependsOn:
+                          - ${{ each dependsOnJob in job.dependsOn }}:
+                            - name: ${{ dependsOnJob }}
+                        condition: ${{ job.condition }}
+                        container: ${{ job.container }}
+                        name: ${{ job.name }}
+                        steps:
+                          - ${{ if parameters.azureAuth }}:
+                            - template: ../steps/azure_auth.yml
+                              parameters:
+                                subscriptionId: $(SUBSCRIPTION_ID)
+                          - ${{ each step in job.steps }}:
+                            - ${{ step }}
+                        timeoutInMinutes: ${{ job.timeoutInMinutes }}
+                        variables:
+                          - ${{ each var in job.variables }}:
+                            - ${{ var }}
+                  - ${{ else }}:
+                    - template: ../jobs/wrapper_deployment.yml
+                      parameters:
+                        artifact: ${{ job.artifact }}
+                        condition: ${{ job.condition }}
+                        container: ${{ job.container }}
+                        dependsOn:
+                        - ${{ each dependsOnJob in job.dependsOn }}:
+                          - name: ${{ dependsOnJob }}
+                        environment: ${{ environment.name }}
+                        name: ${{ job.name }}
+                        steps:
+                          - ${{ if parameters.azureAuth }}:
+                            - template: ../steps/azure_auth.yml
+                              parameters:
+                                subscriptionId: $(SUBSCRIPTION_ID)
+                          - ${{ each step in job.steps }}:
+                            - ${{ step }}
+                        variables:
+                          - ${{ each var in job.variables }}:
+                            - ${{ var }}
+              ${{ if stage.pool }}:
+                pool: ${{ stage.pool }}
+              ${{ else }}:
+                pool: ${{ parameters.pool }}
+              name: ${{ stage.name }} ${{ environment.name }}
+              variables:
+                - template: ../variables/environments/${{ lower(environment.name) }}.yml
+                - template: ../variables/regions/${{ lower(replace(parameters.region, ' ', '-')) }}.yml
+                - group: ${{ parameters.variableGroupPrefix }}_${{ lower(environment.name) }}
+                - ${{ each var in stage.variables }}:
+                  - ${{ var }}
+              ${{ if stage.workingDirectory }}:
+                workingDirectory: ${{ stage.workingDirectory }}
+              ${{ else }}:
+                workingDirectory: ${{ parameters.workingDirectory }}
+  - ${{ else }}:
+    - ${{ each stage in parameters.preDeploymentStages }}:
+      - template: ./wrapper_stage.yml
+        parameters:
+          condition: ${{ stage.condition }}
+          dependsOn:
+            - ${{ each dependsOnStage in stage.dependsOn }}:
+              - ${{ lower(replace(replace(replace(replace(dependsOnStage, '-', '_'), ' ', '_'), '&', 'And'), ',', '')) }}
+          jobs:
+            - ${{ each job in stage.jobs }}:
+              - template: ../jobs/wrapper_job.yml
+                parameters:
+                  dependsOn:
+                    - ${{ each dependsOnJob in job.dependsOn }}:
+                      - name: ${{ dependsOnJob }}
+                  condition: ${{ job.condition }}
+                  container: ${{ job.container }}
+                  name: ${{ job.name }}
+                  steps:
+                    - ${{ each step in job.steps }}:
+                      - ${{ step }}
+                  timeoutInMinutes: ${{ job.timeoutInMinutes }}
+                  variables:
+                    - ${{ each var in job.variables }}:
+                      - ${{ var }}
+          ${{ if stage.pool }}:
+            pool: ${{ stage.pool }}
+          ${{ else }}:
+            pool: ${{ parameters.pool }}
+          name: ${{ stage.name }}
+          variables:
+            - template: ../variables/regions/${{ lower(replace(parameters.region, ' ', '-')) }}.yml
+            - ${{ each var in stage.variables }}:
+              - ${{ var }}
+          ${{ if stage.workingDirectory }}:
+            workingDirectory: ${{ stage.workingDirectory }}
+          ${{ else }}:
+            workingDirectory: ${{ parameters.workingDirectory }}
+    - ${{ each environment in parameters.environments }}:
+      - ${{ each stage in parameters.deploymentStages }}:
+        - template: ./wrapper_stage.yml
+          parameters:
+            condition: ${{ stage.condition }}
+            dependsOn:
+              - ${{ each dependsOn in environment.dependsOn }}:
+                - ${{ lower(replace(replace(replace(replace(stage.name, '-', '_'), ' ', '_'), '&', 'And'), ',', '')) }}_${{ lower(dependsOn) }}
+              - ${{ each dependsOnStage in stage.dependsOn }}:
+                - ${{ lower(replace(replace(replace(replace(dependsOnStage, '-', '_'), ' ', '_'), '&', 'And'), ',', '')) }}_${{ lower(environment.name) }}
+              - ${{ each preDeploymentStage in parameters.preDeploymentStages }}:
+                - ${{ lower(replace(replace(replace(replace(preDeploymentStage.name, '-', '_'), ' ', '_'), '&', 'And'), ',', '')) }}
+            jobs:
+              - ${{ each job in stage.deploymentJobs }}:
+                - ${{ if eq(job.isDeployment, 'false') }}:
+                  - template: ../jobs/wrapper_job.yml
+                    parameters:
+                      dependsOn:
+                        - ${{ each dependsOnJob in job.dependsOn }}:
+                          - name: ${{ dependsOnJob }}
+                      condition: ${{ job.condition }}
+                      container: ${{ job.container }}
+                      name: ${{ job.name }}
+                      steps:
+                        - ${{ if parameters.azureAuth }}:
+                          - template: ../steps/azure_auth.yml
+                            parameters:
+                              subscriptionId: $(SUBSCRIPTION_ID)
+                        - ${{ each step in job.steps }}:
+                          - ${{ step }}
+                      timeoutInMinutes: ${{ job.timeoutInMinutes }}
+                      variables:
+                        - ${{ each var in job.variables }}:
+                          - ${{ var }}
+                - ${{ else }}:
+                  - template: ../jobs/wrapper_deployment.yml
+                    parameters:
+                      artifact: ${{ job.artifact }}
+                      condition: ${{ job.condition }}
+                      container: ${{ job.container }}
+                      dependsOn:
+                        - ${{ each dependsOnJob in job.dependsOn }}:
+                          - name: ${{ dependsOnJob }}
+                      environment: ${{ environment.name }}
+                      name: ${{ job.name }}
+                      steps:
+                        - ${{ if parameters.azureAuth }}:
+                          - template: ../steps/azure_auth.yml
+                            parameters:
+                              subscriptionId: $(SUBSCRIPTION_ID)
+                        - ${{ each step in job.steps }}:
+                          - ${{ step }}
+                      variables:
+                        - ${{ each var in job.variables }}:
+                          - ${{ var }}
+            name: ${{ stage.name }} ${{ environment.name }}
+            ${{ if stage.pool }}:
+              pool: ${{ stage.pool }}
+            ${{ else }}:
+              pool: ${{ parameters.pool }}
+            variables:
+              - template: ../variables/environments/${{ lower(environment.name) }}.yml
+              - template: ../variables/regions/${{ lower(replace(parameters.region, ' ', '-')) }}.yml
+              - group: ${{ parameters.variableGroupPrefix }}_${{ lower(environment.name) }}
+              - ${{ each var in stage.variables }}:
+                - ${{ var }}
+            ${{ if stage.workingDirectory }}:
+              workingDirectory: ${{ stage.workingDirectory }}
+            ${{ else }}:
+              workingDirectory: ${{ parameters.workingDirectory }}

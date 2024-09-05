@@ -1,0 +1,31 @@
+parameters:
+  - name: condition
+    type: string
+    default: succeeded()
+  - name: environmentVariables
+    type: object
+    default: []
+  - name: nodeVersion
+    type: number
+    default: 18
+  - name: script
+    type: string
+  - name: workingDirectory
+    type: string
+    default: $(Build.Repository.LocalPath)
+
+steps:
+  - script: |
+      source ~/.bashrc
+      nvm use ${{ parameters.nodeVersion }} || nvm install ${{ parameters.nodeVersion }}
+      ${{ parameters.script }}
+
+      if [[ $? -ne 0 ]]; then
+        exit 1
+      fi
+    condition: ${{ parameters.condition }}
+    displayName: 'Script: ${{ parameters.script }}'
+    env:
+      ${{ each envVar in parameters.environmentVariables }}:
+        ${{ envVar.key }}: ${{ envVar.value }}
+    workingDirectory: ${{ parameters.workingDirectory }}

@@ -1,0 +1,64 @@
+parameters:
+  - name: artifact
+    type: object
+    default: []
+  - name: condition
+    type: string
+    default: succeeded()
+  - name: container
+    type: string
+    default: ""
+  - name: dependsOn
+    type: object
+    default: []
+  - name: environment
+    type: string
+  - name: name
+    type: object
+    default: []
+  - name: steps
+    type: stepList
+  - name: variables
+    type: object
+    default: []
+
+jobs:
+  - deployment: ${{ lower(replace(replace(replace(replace(parameters.name, '-', '_'), ' ', '_'), '&', 'And'), ',', '')) }}
+    condition: ${{ parameters.condition }}
+    ${{ if parameters.container }}:
+      container: ${{ parameters.container }}
+    dependsOn:
+      - ${{ each dependsOn in parameters.dependsOn }}:
+          - ${{ replace(replace(replace(replace(dependsOn.name, '-', '_'), ' ', '_'), '&', 'And'), ',', '') }}
+    displayName: ${{ parameters.name }}
+    environment: ${{ parameters.environment }}
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+            - download: current
+            - ${{ if parameters.artifact }}:
+                - task: DownloadPipelineArtifact@2
+                  displayName: "Download Artifact: ${{ parameters.artifact.name }}"
+                  inputs:
+                    allowPartiallySucceededBuilds: true
+                    artifact: ${{ parameters.artifact.name }}
+                    ${{ if ne(parameters.artifact.path, '') }}:
+                      path: ${{ parameters.artifact.path }}
+                    ${{ if ne(parameters.artifact.patterns, '') }}:
+                      patterns: ${{ parameters.artifact.patterns }}
+                    pipeline: ${{ parameters.artifact.sourcePipeline }}
+                    preferTriggeringPipeline: true
+                    project: $(System.TeamProject)
+                    source: specific
+                    tags: ${{ replace(replace(variables['Build.SourceBranch'], 'refs/heads/', ''), 'ref/tags/', '') }}
+            - script: |
+                echo "##vso[build.addbuildtag]environment=${{ parameters.environment }}"
+              displayName: Add Environment build tags
+            - ${{ each step in parameters.steps }}:
+                - ${{ step }}
+    variables:
+      - ${{ each var in parameters.variables }}:
+          - ${{ var }}
+    workspace:
+      clean: all

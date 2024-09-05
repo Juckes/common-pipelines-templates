@@ -1,0 +1,39 @@
+parameters:
+  - name: condition
+    type: string
+    default: succeeded()
+  - name: container
+    type: string
+    default: ''
+  - name: dependsOn
+    type: object
+    default: []
+  - name: name
+    type: object
+  - name: steps
+    type: stepList
+  - name: timeoutInMinutes
+    type: number
+    default: 60
+  - name: variables
+    type: object
+    default: []
+
+jobs:
+  - job: ${{ lower(replace(replace(replace(replace(parameters.name, '-', '_'), ' ', '_'), '&', 'And'), ',', '')) }}
+    condition: ${{ parameters.condition }}
+    ${{ if parameters.container }}:
+      container: ${{ parameters.container }}
+    dependsOn:
+      - ${{ each dependsOn in parameters.dependsOn }}:
+        - ${{ replace(replace(replace(replace(dependsOn.name, '-', '_'), ' ', '_'), '&', 'And'), ',', '') }}
+    displayName: ${{ parameters.name }}
+    steps:
+      - ${{ each step in parameters.steps }}:
+        - ${{ step }}
+    timeoutInMinutes: ${{ parameters.timeoutInMinutes }}
+    variables:
+      - ${{ each var in parameters.variables }}:
+        - ${{ var }}
+    workspace:
+      clean: all

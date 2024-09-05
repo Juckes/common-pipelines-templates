@@ -1,0 +1,100 @@
+parameters:
+  - name: container
+    type: string
+    default: ''
+  - name: environment
+    type: string
+    default: dev
+  - name: globalVariables
+    type: object
+    default: []
+  - name: pool
+    type: object
+    default:
+      name: pins-odt-agent-pool
+  - name: validateName
+    type: string
+    default: Validate
+  - name: validationSteps
+    type: stepList
+    default: []
+  - name: validationJobs # A list of custom objects to use in a multi-job validation context.
+    # Structure of each object in the list must match the following:
+    # - name: Name of the job - Mandatory
+    #   condition: Condition under which to run the job - Optional
+    #   container: The name of the container in which to run the job
+    #   dependsOn: List of job names this one is dependent on in the same stage, must be an object/list. - Optional
+    #   steps: stepList of steps to run - Mandatory
+    #   variables: List of job level variables to pass into the agent - Optional
+    type: object
+    default: []
+  - name: workingDirectory
+    type: string
+    default: $(System.DefaultWorkingDirectory)
+  - name: skipAzureAuth
+    type: boolean
+    default: false
+  - name: gitFetchDepth # see https://learn.microsoft.com/en-us/azure/devops/pipelines/repos/azure-repos-git?view=azure-devops&tabs=yaml#shallow-fetch
+    type: number
+    default: 1
+
+variables:
+  - ${{ each var in parameters.globalVariables }}:
+    - ${{ var }}
+  - group: pipeline_secrets
+
+stages:
+  - template: ./wrapper_stage.yml
+    parameters:
+      jobs:
+        - ${{ if ge(length(parameters.validationJobs), 1) }}:
+          - job: check_branch_name
+            displayName: Check branch name
+            steps:
+              - checkout: self
+                clean: true
+                persistCredentials: true
+                fetchDepth: ${{ parameters.gitFetchDepth }}
+              - template: ../steps/check_branch_name.yml
+              - template: ../steps/git_tagging.yml
+          - ${{ each job in parameters.validationJobs }}:
+            - template: ../jobs/wrapper_job.yml
+              parameters:
+                condition: ${{ job.condition }}
+                container: ${{ job.container }}
+                name: ${{ job.name }}
+                steps:
+                  - checkout: self
+                    clean: true
+                    persistCredentials: true
+                    fetchDepth: ${{ parameters.gitFetchDepth }}
+                  - ${{ if not(parameters.skipAzureAuth) }}:
+                    - template: ../steps/azure_auth.yml
+                  - ${{ each step in job.steps }}:
+                    - ${{ step }}
+                dependsOn:
+                  - ${{ each dependsOn in job.dependsOn }}:
+                    - name: ${{ dependsOn }}
+                variables:
+                  - ${{ each var in job.variables }}:
+                    - ${{ var }}
+        - ${{ if eq(length(parameters.validationJobs), 0) }}:
+          - template: ../jobs/wrapper_job.yml
+            parameters:
+              container: ${{ parameters.container }}
+              name: ${{ parameters.validateName }}
+              steps:
+                - checkout: self
+                  clean: true
+                  persistCredentials: true
+                  fetchDepth: ${{ parameters.gitFetchDepth }}
+                - ${{ if not(parameters.skipAzureAuth) }}:
+                  - template: ../steps/azure_auth.yml
+                - template: ../steps/check_branch_name.yml
+                - template: ../steps/git_tagging.yml
+                - ${{ each step in parameters.validationSteps }}:
+                  - ${{ step }}
+      pool: ${{ parameters.pool }}
+      name: ${{ parameters.validateName }}
+      variables:
+        - template: ../variables/environments/${{ lower(parameters.environment) }}.yml
